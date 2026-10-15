@@ -62,15 +62,47 @@ jobs:
           export CATEGORY
           python publish.py
 
+  
       - name: Save publication history
         run: |
           if [ -f posted.json ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add posted.json
 
+            cp posted.json /tmp/tech-puls-posted.json
+            git fetch origin main
+            git reset --hard origin/main
+
+            python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("posted.json")
+          saved = Path("/tmp/tech-puls-posted.json")
+
+          current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          new = json.loads(saved.read_text(encoding="utf-8"))
+
+          current["posted"] = sorted(
+              set(current.get("posted", [])) | set(new.get("posted", []))
+          )
+
+          for key in ("titles", "posted_titles"):
+              if key in current or key in new:
+                  current[key] = sorted(
+                      set(current.get(key, [])) | set(new.get(key, []))
+                  )
+
+          path.write_text(
+              json.dumps(current, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8"
+          )
+          PY
+
+            git add posted.json
             if ! git diff --cached --quiet; then
               git commit -m "Update published news"
-              git push
+              git push origin HEAD:main
             fi
           fi
+
