@@ -1,6 +1,7 @@
 import hashlib
 import html
 import json
+import uuid
 import os
 import re
 import urllib.error
@@ -141,18 +142,66 @@ def telegram_call(method, payload):
         raise RuntimeError(f'Telegram {method} HTTP {exc.code}: {detail}') from None
 
 
-def publish(text, image_url=None):
-    if image_url:
+def send_photo_file(image_url, caption):
+    # Download on the GitHub runner, then upload bytes to Telegram via multipart/form-data.
+    parsed = urllib.parse.urlsplit(image_url)
+    if parsed.scheme != 'https':
+        raise ValueError('Image URL must use HTTPS')
+    request = urllib.request.Request(image_url, headers={
+        'User-Agent': 'Mozilla/5.0 (compatible; TechPulsRSSBot/3.1)',
+        'Referer': f'{parsed.scheme}://{parsed.netloc}/',
+        'Accept': 'image/jpeg,image/png,image/webp,image/*;q=0.8',
+    })
+    with urllib.request.urlopen(request, timeout=20) as response:
+        mime = response.headers.get_content_type().lower()
+        image = response.read(9 * 1024 * 1024 + 1)
+    if len(image) > 9 * 1024 * 1024:
+        raise ValueError('Image exceeds 9 MB safety limit')
+    if image.startswith(b'\xff\xd8\xff'):
+        mime, extension = 'image/jpeg', 'jpg'
+    elif image.startswith(b'\x89PNG\r\n\x1a\n'):
+        mime, extension = 'image/png', 'png'
+    else:
+        raise ValueError(f'Unsupported image format: {mime}')
+
+    boundary = 'TechPuls' + uuid.uuid4().hex
+    fields = {'chat_id': CHANNEL, 'caption': caption, 'parse_mode': 'HTML'}
+    body = bytearray()
+    for name, value in fields.items():
+        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode('utf-8'))
+    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="news.{extension}"\r\nContent-Type: {mime}\r\n\r\n'.encode('utf-8'))
+    body.extend(image)
+    body.extend(f'\r\n--{boundary}--\r\n'.encode('utf-8'))
+    upload = urllib.request.Request(
+        f'https://api.telegram.org/bot{TOKEN}/sendPhoto',
+        data=bytes(body),
+        headers={'Content-Type': f'multipart/form-data; boundary={boundary}'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(upload, timeout=40) as response:
+            result = json.load(response)
+            if not result.get('ok'):
+                raise RuntimeError('Telegram did not confirm photo publication')
+    except urllib.error.HTTPError as exc:
         try:
-            # Telegram fetches the remote image; no image hosting or extra libraries required.
-            telegram_call('sendPhoto', {
-                'chat_id': CHANNEL, 'photo': image_url,
-                'caption': text, 'parse_mode': 'HTML',
-            })
-            print('Published with RSS image')
+            detail = json.loads(exc.read().decode('utf-8')).get('description', 'Unknown error')
+        except (ValueError, UnicodeError):
+            detail = 'Unknown error'
+        raise RuntimeError(f'Telegram sendPhoto HTTP {exc.code}: {detail}') from None
+
+
+def publish(text, image_url=None):
+    # Telegram photo captions are limited to 1024 characters after entity parsing.
+    if image_url and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
+        try:
+            send_photo_file(image_url, text)
+            print('Published with uploaded image')
             return
-        except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
+        except (RuntimeError, urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
             print(f'Image unavailable; posting text instead: {exc}')
+    elif image_url:
+        print('Caption too long for photo; posting text instead')
     telegram_call('sendMessage', {
         'chat_id': CHANNEL, 'text': text, 'parse_mode': 'HTML',
         'link_preview_options': {'is_disabled': True},
