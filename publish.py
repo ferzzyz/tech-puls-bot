@@ -3,8 +3,6 @@ import html
 import json
 import os
 import re
-import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,41 +16,34 @@ CHANNEL = os.environ['TELEGRAM_CHANNEL_ID'].strip()
 CATEGORY = os.environ.get('CATEGORY', 'ai').strip()
 STATE = Path('posted.json')
 
-# RSS feeds from Russian-language technology publications. If a feed is unavailable,
-# the script tries the next one and exits without posting rather than inventing news.
 FEEDS = {
     'ai': [
         'https://habr.com/ru/rss/hubs/artificial_intelligence/articles/?fl=ru',
         'https://habr.com/ru/rss/hubs/machine_learning/articles/?fl=ru',
         'https://3dnews.ru/news/rss/',
     ],
-    'gadgets': [
-        'https://www.ixbt.com/export/news.rss',
-        'https://3dnews.ru/news/rss/',
-    ],
-    'it': [
-        'https://habr.com/ru/rss/articles/?fl=ru',
-        'https://3dnews.ru/news/rss/',
-    ],
+    'gadgets': ['https://www.ixbt.com/export/news.rss', 'https://3dnews.ru/news/rss/'],
+    'it': ['https://habr.com/ru/rss/articles/?fl=ru', 'https://3dnews.ru/news/rss/'],
 }
-KEYWORDS = {
-    'ai': ('ии', 'нейросет', 'искусственн', 'ai', 'chatgpt', 'gpt', 'модел', 'нейрон', 'машинн', 'генератив'),
-    'gadgets': ('смартфон', 'телефон', 'iphone', 'android', 'планшет', 'ноутбук', 'гаджет', 'наушник', 'apple', 'samsung', 'процессор', 'видеокарт'),
-    'it': ('разработ', 'программ', 'кибер', 'безопасност', 'linux', 'windows', 'интернет', 'сервер', 'github', 'браузер', 'it', 'технолог'),
+
+PATTERNS = {
+    'ai': [r'\bии\b', r'нейросет', r'искусственн\w* интеллект', r'\bai\b', r'chatgpt', r'\bgpt(?:-\d|\b)', r'gemini', r'claude', r'deepseek', r'машинн\w* обучен', r'генеративн\w* модел'],
+    'gadgets': [r'смартфон', r'\biphone\b', r'\bandroid\b', r'планшет', r'ноутбук', r'гаджет', r'наушник', r'\bipad\b', r'\bmacbook\b', r'видеокарт', r'умн\w* час', r'\bplaystation\b', r'\bnintendo\b'],
+    'it': [r'кибербезопасност', r'уязвимост', r'\blinux\b', r'\bwindows\b', r'\bgithub\b', r'браузер', r'хакер', r'утечк\w* данн', r'программирован', r'операционн\w* систем', r'\bpython\b', r'\btelegram\b', r'\bинтернет\b'],
 }
 EMOJI = {'ai': '🤖', 'gadgets': '📱', 'it': '💻'}
-LABEL = {'ai': 'ИИ и нейросети', 'gadgets': 'Гаджеты и технологии', 'it': 'IT и цифровой мир'}
+LABEL = {'ai': 'Нейросети', 'gadgets': 'Гаджеты', 'it': 'IT и технологии'}
 
 
 def get(url):
-    req = urllib.request.Request(url, headers={'User-Agent': 'TechPulsRSSBot/1.0 (+https://t.me/tech_puls3)'})
-    with urllib.request.urlopen(req, timeout=18) as response:
+    request = urllib.request.Request(url, headers={'User-Agent': 'TechPulsRSSBot/2.0 (+https://t.me/tech_puls3)'})
+    with urllib.request.urlopen(request, timeout=18) as response:
         return response.read()
 
 
-def clean(text):
-    text = re.sub(r'<[^>]*>', ' ', text or '')
-    return re.sub(r'\s+', ' ', html.unescape(text)).strip()
+def clean(value):
+    value = re.sub(r'<[^>]*>', ' ', value or '')
+    return re.sub(r'\s+', ' ', html.unescape(value)).strip()
 
 
 def item_text(item, names):
@@ -84,21 +75,44 @@ def parse_feed(xml_data):
                 dt = dt.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError, IndexError):
             dt = None
-        if title and link.startswith(('http://', 'https://')):
+        if title and link.startswith(('https://', 'http://')):
             yield {'title': title, 'link': link, 'description': description, 'date': dt}
 
 
 def key_for(article):
     parsed = urllib.parse.urlsplit(article['link'])
-    normalized = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip('/'), '', ''))
+    normalized = urllib.parse.urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip('/'), '', ''))
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
+def title_key(title):
+    normalized = re.sub(r'[^\w]+', ' ', title.casefold()).strip()
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def compact(text, limit=260):
+    text = clean(text)
+    if len(text) <= limit:
+        return text
+    shortened = text[:limit + 1]
+    sentences = re.findall(r'.+?[.!?](?=\s|$)', shortened)
+    if sentences and len(sentences[0]) >= 55:
+        return sentences[0].strip()
+    return shortened[:limit].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
+
+
 def send_message(text):
-    payload = json.dumps({'chat_id': CHANNEL, 'text': text, 'disable_web_page_preview': False}).encode('utf-8')
+    payload = json.dumps({
+        'chat_id': CHANNEL,
+        'text': text,
+        'parse_mode': 'HTML',
+        'link_preview_options': {'is_disabled': True},
+    }).encode('utf-8')
     request = urllib.request.Request(
         f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-        data=payload, headers={'Content-Type': 'application/json'}, method='POST'
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -116,44 +130,51 @@ def send_message(text):
 def main():
     if CATEGORY not in FEEDS:
         raise ValueError('CATEGORY must be ai, gadgets, or it')
-    if STATE.exists():
-        data = json.loads(STATE.read_text(encoding='utf-8'))
-    else:
-        data = {'posted': []}
+    data = json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {'posted': []}
     posted = set(data.get('posted', []))
-    candidates = []
+    posted_titles = set(data.get('posted_titles', []))
     now = datetime.now(timezone.utc)
+    candidates = []
+    seen = set()
     for feed in FEEDS[CATEGORY]:
         try:
             for article in parse_feed(get(feed)):
-                if article['date'] and (article['date'] < now - timedelta(days=3) or article['date'] > now + timedelta(hours=2)):
+                if article['date'] and not now - timedelta(days=3) <= article['date'] <= now + timedelta(hours=2):
                     continue
-                if key_for(article) in posted:
+                key = key_for(article)
+                tkey = title_key(article['title'])
+                if key in posted or tkey in posted_titles or (key, tkey) in seen:
                     continue
-                text = (article['title'] + ' ' + article['description']).lower()
-                if not any(word in text for word in KEYWORDS[CATEGORY]):
+                title_matches = sum(bool(re.search(p, article['title'], re.I)) for p in PATTERNS[CATEGORY])
+                description_matches = sum(bool(re.search(p, article['description'], re.I)) for p in PATTERNS[CATEGORY])
+                if title_matches == 0 and description_matches < 2:
                     continue
+                article['score'] = title_matches * 3 + description_matches
                 candidates.append(article)
+                seen.add((key, tkey))
         except (urllib.error.URLError, ET.ParseError, TimeoutError, ValueError) as exc:
             print(f'Feed unavailable: {feed}: {type(exc).__name__}')
     if not candidates:
         print('No suitable new articles. Nothing published.')
         return
-    candidates.sort(key=lambda x: x['date'] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    candidates.sort(key=lambda a: (a['score'], a['date'] or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
     article = candidates[0]
-    title = article['title'][:220]
-    description = article['description'][:300].rstrip()
-    message = f"{EMOJI[CATEGORY]} {LABEL[CATEGORY]} | Tech Puls\n\n{title}\n"
-    if description and description.lower() != title.lower():
-        message += f'\n{description}\n'
-    message += f"\n🔗 Источник: {article['link']}\n\n⚡ @tech_puls3"
+    title = compact(article['title'], 180)
+    description = compact(article['description'], 260)
+    if description.casefold() == article['title'].casefold() or description.casefold() in article['title'].casefold():
+        description = ''
+    message = f"{EMOJI[CATEGORY]} <b>{html.escape(title)}</b>\n\n"
+    if description:
+        message += f"{html.escape(description)}\n\n"
+    message += f"🔗 <a href=\"{html.escape(article['link'], quote=True)}\">Читать источник ↗</a>\n\n⚡ @tech_puls3 · {LABEL[CATEGORY]}"
     send_message(message)
     posted.add(key_for(article))
+    posted_titles.add(title_key(article['title']))
     data['posted'] = sorted(posted)
+    data['posted_titles'] = sorted(posted_titles)
     STATE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    print(f'Published {CATEGORY}: {title}')
+    print(f'Published {CATEGORY}: {article["title"]}')
 
 
 if __name__ == '__main__':
     main()
-
