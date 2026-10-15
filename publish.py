@@ -53,6 +53,27 @@ def item_text(item, names):
     return ''
 
 
+def image_from_item(item):
+    # Prefer explicit RSS media fields, then the first image in the RSS description.
+    for child in item.iter():
+        tag = child.tag.split('}')[-1].lower()
+        url = child.attrib.get('url', '')
+        medium = child.attrib.get('medium', '').lower()
+        mime = child.attrib.get('type', '').lower()
+        if tag in ('thumbnail', 'content') and url and (tag == 'thumbnail' or medium == 'image' or mime.startswith('image/')):
+            if url.startswith('https://'):
+                return url
+        if tag == 'enclosure' and url and mime.startswith('image/') and url.startswith('https://'):
+            return url
+    for child in item.iter():
+        if child.tag.split('}')[-1] in ('description', 'summary', 'encoded', 'content'):
+            raw = child.text or ''
+            match = re.search(r'<img\b[^>]*\bsrc=["\'](https://[^"\']+)["\']', raw, re.I)
+            if match:
+                return html.unescape(match.group(1))
+    return None
+
+
 def parse_feed(xml_data):
     root = ET.fromstring(xml_data)
     for item in root.iter():
@@ -76,7 +97,7 @@ def parse_feed(xml_data):
         except (ValueError, TypeError, IndexError):
             dt = None
         if title and link.startswith(('https://', 'http://')):
-            yield {'title': title, 'link': link, 'description': description, 'date': dt}
+            yield {'title': title, 'link': link, 'description': description, 'date': dt, 'image': image_from_item(item)}
 
 
 def key_for(article):
@@ -101,30 +122,42 @@ def compact(text, limit=260):
     return shortened[:limit].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
 
 
-def send_message(text):
-    payload = json.dumps({
-        'chat_id': CHANNEL,
-        'text': text,
-        'parse_mode': 'HTML',
-        'link_preview_options': {'is_disabled': True},
-    }).encode('utf-8')
+def telegram_call(method, payload):
     request = urllib.request.Request(
-        f'https://api.telegram.org/bot{TOKEN}/sendMessage',
-        data=payload,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
+        f'https://api.telegram.org/bot{TOKEN}/{method}',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'}, method='POST',
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=35) as response:
             result = json.load(response)
             if not result.get('ok'):
-                raise RuntimeError('Telegram did not confirm publication')
+                raise RuntimeError(f'Telegram {method} did not confirm publication')
     except urllib.error.HTTPError as exc:
         try:
             detail = json.loads(exc.read().decode('utf-8')).get('description', 'Unknown error')
         except (ValueError, UnicodeError):
             detail = 'Unknown error'
-        raise RuntimeError(f'Telegram HTTP {exc.code}: {detail}') from None
+        raise RuntimeError(f'Telegram {method} HTTP {exc.code}: {detail}') from None
+
+
+def publish(text, image_url=None):
+    if image_url:
+        try:
+            # Telegram fetches the remote image; no image hosting or extra libraries required.
+            telegram_call('sendPhoto', {
+                'chat_id': CHANNEL, 'photo': image_url,
+                'caption': text, 'parse_mode': 'HTML',
+            })
+            print('Published with RSS image')
+            return
+        except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
+            print(f'Image unavailable; posting text instead: {exc}')
+    telegram_call('sendMessage', {
+        'chat_id': CHANNEL, 'text': text, 'parse_mode': 'HTML',
+        'link_preview_options': {'is_disabled': True},
+    })
+    print('Published text-only')
 
 
 def main():
@@ -167,7 +200,7 @@ def main():
     if description:
         message += f"{html.escape(description)}\n\n"
     message += f"🔗 <a href=\"{html.escape(article['link'], quote=True)}\">Читать источник ↗</a>\n\n⚡ @tech_puls3 · {LABEL[CATEGORY]}"
-    send_message(message)
+    publish(message, article.get('image'))
     posted.add(key_for(article))
     posted_titles.add(title_key(article['title']))
     data['posted'] = sorted(posted)
