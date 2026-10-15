@@ -3,9 +3,17 @@ name: Tech Puls Publisher
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+    - cron: '0 11 * * *'
+    - cron: '0 16 * * *'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: tech-puls-publisher
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -20,8 +28,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Publish to Telegram
+      - name: Publish news
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
         run: python publish.py
+
+      - name: Save published news
+        run: |
+          if [ -f posted.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add posted.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Update published news"
+              git push
+            fi
+          fi
