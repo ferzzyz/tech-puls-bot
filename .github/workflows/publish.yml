@@ -39,6 +39,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install card renderer
+        continue-on-error: true
+        run: python -m pip install 'Pillow>=11,<14'
+
       - name: Publish news
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

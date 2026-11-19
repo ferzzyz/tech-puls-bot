@@ -164,6 +164,10 @@ def send_photo_file(image_url, caption):
     else:
         raise ValueError(f'Unsupported image format: {mime}')
 
+    upload_photo(image, caption, mime, extension)
+
+
+def upload_photo(image, caption, mime, extension):
     boundary = 'TechPuls' + uuid.uuid4().hex
     fields = {'chat_id': CHANNEL, 'caption': caption, 'parse_mode': 'HTML'}
     body = bytearray()
@@ -191,7 +195,23 @@ def send_photo_file(image_url, caption):
         raise RuntimeError(f'Telegram sendPhoto HTTP {exc.code}: {detail}') from None
 
 
-def publish(text, image_url=None):
+def publish(text, image_url=None, title=None):
+    if title and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
+        try:
+            from news_card import render_card
+            card = render_card(title, LABEL[CATEGORY], CATEGORY)
+        except (ImportError, OSError, ValueError) as exc:
+            print(f'Card unavailable: {type(exc).__name__}')
+        else:
+            try:
+                upload_photo(card, text, 'image/jpeg', 'jpg')
+                print('Published with Tech Puls card')
+                return
+            except RuntimeError as exc:
+                if not str(exc).startswith('Telegram sendPhoto HTTP 400:'):
+                    raise
+                print('Card rejected; trying source photo')
+
     # Telegram photo captions are limited to 1024 characters after entity parsing.
     if image_url and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
         try:
@@ -249,7 +269,7 @@ def main():
     if description:
         message += f"{html.escape(description)}\n\n"
     message += f"🔗 <a href=\"{html.escape(article['link'], quote=True)}\">Читать источник ↗</a>\n\n⚡ @tech_puls3 · {LABEL[CATEGORY]}"
-    publish(message, article.get('image'))
+    publish(message, article.get('image'), article['title'])
     posted.add(key_for(article))
     posted_titles.add(title_key(article['title']))
     data['posted'] = sorted(posted)
