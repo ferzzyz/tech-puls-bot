@@ -196,6 +196,16 @@ def upload_photo(image, caption, mime, extension):
 
 
 def publish(text, image_url=None, title=None):
+    # Telegram photo captions are limited to 1024 characters after entity parsing.
+    if image_url and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
+        try:
+            send_photo_file(image_url, text)
+            print('Published with uploaded image')
+            return
+        except (RuntimeError, urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            print(f'Source image unavailable: {type(exc).__name__}')
+    elif image_url:
+        print('Caption too long for photo; posting text instead')
     if title and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
         try:
             from news_card import render_card
@@ -210,18 +220,8 @@ def publish(text, image_url=None, title=None):
             except RuntimeError as exc:
                 if not str(exc).startswith('Telegram sendPhoto HTTP 400:'):
                     raise
-                print('Card rejected; trying source photo')
+                print('Card rejected; posting text')
 
-    # Telegram photo captions are limited to 1024 characters after entity parsing.
-    if image_url and len(html.unescape(re.sub(r'<[^>]+>', '', text))) <= 1000:
-        try:
-            send_photo_file(image_url, text)
-            print('Published with uploaded image')
-            return
-        except (RuntimeError, urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            print(f'Image unavailable; posting text instead: {exc}')
-    elif image_url:
-        print('Caption too long for photo; posting text instead')
     telegram_call('sendMessage', {
         'chat_id': CHANNEL, 'text': text, 'parse_mode': 'HTML',
         'link_preview_options': {'is_disabled': True},
